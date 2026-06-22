@@ -33,19 +33,21 @@ import pandas as pd
 import csv
 import os
 from datetime import datetime
-
+from data_feed import get_kite_object, update_ohlc_df
 
 kite = None
 
 
 class Strategy():
-    def __init__(self, symbol: str, data: pd.DataFrame, target_points: int, initial_capital: int = 10000000):
+    def __init__(self, symbol: str, data: pd.DataFrame, target_points: int, initial_capital: int = 10000000, open_positions_csv: str = None, closed_positions_csv: str = None):
         self.symbol          = symbol
         self.data            = data
         self.req_data        = None
         self.target_points   = target_points
-        self.margin          = 0.3   # 30% of entry price as collateral per position
+        self.margin          = 0.2   # 20% of entry price as collateral per position
         self.reference_point = 0     # last buy price; rises with sells, falls with buys
+        self.open_positions_csv = open_positions_csv  # Path to CSV file for tracking positions
+        self.closed_positions_csv = closed_positions_csv  # Path to CSV file for closed trades
 
         # positions: unique_key -> dict(entry_price, target, entry_time)
         self.positions = {}
@@ -83,11 +85,83 @@ class Strategy():
             'target':      target,
             'entry_time':  current_time,
         }
+        charges = 0.005 * entry_price
+        self.capital -= charges
+
         self.num_buys += 1
         print(f"\n[BUY  #{self.num_buys}] Time: {current_time} | "
               f"Entry: {entry_price:.2f} | Target: {target:.2f} | "
               f"Open Positions: {len(self.positions)} | "
               f"Free Capital: {self._free_capital():.2f}")
+        
+        # Update the open_positions CSV when a new position is opened
+        self._update_open_positions_csv()
+
+    def _update_open_positions_csv(self):
+        """Update the open_positions CSV file with current positions."""
+        if self.open_positions_csv is None:
+            return
+        
+        if not self.positions:
+            # Clear the file if no positions
+            with open(self.open_positions_csv, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=['Entry Time', 'Entry', 'Target', 'Current', 'Unreal.'])
+                writer.writeheader()
+        else:
+            # Write current positions to CSV
+            current_price = self.data['close'].iloc[-1]
+            rows = []
+            for pos in self.positions.values():
+                unreal = current_price - pos['entry_price']
+                rows.append({
+                    'Entry Time': pos['entry_time'],
+                    'Entry': pos['entry_price'],
+                    'Target': pos['target'],
+                    'Current': current_price,
+                    'Unreal.': unreal,
+                })
+            
+            df = pd.DataFrame(rows)
+            df.to_csv(self.open_positions_csv, index=False)
+
+    def _append_closed_position_csv(self, trade_data: dict):
+        """Append a closed trade to the closed_positions CSV file."""
+        if self.closed_positions_csv is None:
+            return
+        
+        # Determine next trade_no
+        trade_no = 1
+        if os.path.exists(self.closed_positions_csv):
+            try:
+                df_existing = pd.read_csv(self.closed_positions_csv)
+                if len(df_existing) > 0:
+                    trade_no = int(df_existing['trade_no'].max()) + 1
+            except:
+                pass
+        
+        # Prepare row to append
+        row = {
+            'trade_no': trade_no,
+            'buy_date': trade_data['entry_time'],
+            'buy_price': round(trade_data['entry_price'], 2),
+            'target': round(trade_data['target'], 2),
+            'sell_date': trade_data['exit_time'],
+            'sell_price': round(trade_data['exit_price'], 2),
+            'profit': round(trade_data['profit_points'], 2),
+            'profit_pct': round(trade_data['profit_pct'], 2),
+            'balance': round(trade_data['balance'], 2),
+        }
+        
+        # Read existing data or create new DataFrame
+        if os.path.exists(self.closed_positions_csv):
+            df_existing = pd.read_csv(self.closed_positions_csv)
+            df_new = pd.DataFrame([row])
+            df = pd.concat([df_existing, df_new], ignore_index=True)
+        else:
+            df = pd.DataFrame([row])
+        
+        # Write to CSV
+        df.to_csv(self.closed_positions_csv, index=False)
 
     # ------------------------------------------------------------------
     # Core logic
@@ -102,7 +176,8 @@ class Strategy():
             if current_price >= pos['target']:
                 profit_points = current_price - pos['entry_price']
                 profit_pct    = (profit_points / pos['entry_price']) * 100
-                self.capital += profit_points  # full contract P&L
+                charges = 0.005 * current_price  # 0.5% charge on exit price
+                self.capital += profit_points - charges  # full contract P&L minus charges
                 self.num_sells += 1
 
                 self.trade_log.append({
@@ -126,6 +201,12 @@ class Strategy():
                 # After a sell, anchor reference upward so future dips from
                 # this new high trigger fresh buys
                 self.reference_point = max(self.reference_point, current_price)
+                
+                # Append closed position to closed_positions CSV
+                self._append_closed_position_csv(self.trade_log[-1])
+                
+                # Update the open_positions CSV to remove this position
+                self._update_open_positions_csv()
 
         # --- FIRST BUY EVER ---
         if not self.positions and self.reference_point == 0:
@@ -211,14 +292,16 @@ class Strategy():
         overall_profit     = realized_pnl + unrealized_pnl
         overall_profit_pct = (overall_profit / self.initial_capital) * 100
         current_drawdown   = (self.peak_capital - total_capital) / self.peak_capital if self.peak_capital > 0 else 0
+        current_margin_in_use = sum(p['entry_price'] * self.margin for p in self.positions.values())
 
         print("\n" + "="*72)
-        print("                       BACKTEST SUMMARY")
+        print("                       SUMMARY")
         print("="*72)
         print(f"  Symbol             : {self.symbol}")
         print(f"  Initial Capital    : {self.initial_capital:.2f}")
         print(f"  Final Capital      : {self.capital:.2f}")
         print(f"  Peak Capital       : {self.peak_capital:.2f}")
+        print(f"  Margin in Use      : {current_margin_in_use:.2f}")
         print(f"  Overall Profit     : {overall_profit:.2f} ({overall_profit_pct:.2f}%)")
         print(f"  Realized PnL       : {realized_pnl:.2f} ({realized_pnl_pct:.2f}%)")
         print(f"  Unrealized PnL     : {unrealized_pnl:.2f} ({unrealized_pnl_pct:.2f}%)")
@@ -292,11 +375,6 @@ class Strategy():
         print(f"\n  ✓ Trade log exported → {os.path.abspath(filename)}")
 
     def run(self):
-        print(f"\n{'='*72}")
-        print(f"  Starting Backtest | Symbol: {self.symbol} | Target: {self.target_points} pts")
-        print(f"  Data Points: {len(self.data)} | Capital: {self.initial_capital} | Margin: {self.margin*100:.0f}%")
-        print(f"{'='*72}")
-
         for i in range(len(self.data)):
             self.req_data = self.data.iloc[:i+1]
             self.take_position()
@@ -305,6 +383,19 @@ class Strategy():
         self._export_trades_csv()
 
 
-data = pd.read_csv('SILVERMIC26JUNFUT_minute.csv')
-strat = Strategy(symbol='SILVERMIC26JUNFUT', data=data, target_points=1000)
-strat.run()
+if __name__ == "__main__":
+    import time
+    symbol = 'SILVERMIC26JUNFUT'
+    # data = pd.read_csv(f'{symbol}_minute.csv')
+    # data = data.loc['2026-06-08 9:00':]
+    data = pd.read_csv(f'{symbol}_minute.csv', parse_dates=['date'])
+    # data = data[data['date'] >= '2026-06-08 9:00']
+    print(data.head())
+    time.sleep(5)
+    target_points = 500
+    strat = Strategy(symbol=symbol, data=data, target_points=target_points)
+    print(f"\n{'='*72}")
+    print(f"  Starting Backtest | Symbol: {strat.symbol} | Target: {strat.target_points} pts")
+    print(f"  Capital: {strat.initial_capital} | Margin: {strat.margin*100:.0f}%")
+    print(f"{'='*72}")
+    strat.run()
