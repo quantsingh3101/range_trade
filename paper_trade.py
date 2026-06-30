@@ -94,7 +94,7 @@ while True:
             last_candle_time = current_time
             
             print(f"\n[DATA] Time: {current_time} | Price: {current_price:.2f} | "
-                  f"Open Positions: {len(strategy.positions)} | Margin in use: {strategy.open_positions_csv['Entry Price'].sum() * strategy.margin:.2f}")
+                  f"Open Positions: {len(strategy.positions)}")
             strategy.print_summary()
 
             consecutive_errors = 0

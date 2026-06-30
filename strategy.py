@@ -292,7 +292,7 @@ class Strategy():
         overall_profit     = realized_pnl + unrealized_pnl
         overall_profit_pct = (overall_profit / self.initial_capital) * 100
         current_drawdown   = (self.peak_capital - total_capital) / self.peak_capital if self.peak_capital > 0 else 0
-        current_margin_in_use = sum(p['entry_price'] * self.margin for p in self.positions.values())
+        # current_margin_in_use = sum(p['entry_price'] * self.margin for p in self.positions.values())
 
         print("\n" + "="*72)
         print("                       SUMMARY")
@@ -301,7 +301,7 @@ class Strategy():
         print(f"  Initial Capital    : {self.initial_capital:.2f}")
         print(f"  Final Capital      : {self.capital:.2f}")
         print(f"  Peak Capital       : {self.peak_capital:.2f}")
-        print(f"  Margin in Use      : {current_margin_in_use:.2f}")
+        # print(f"  Margin in Use      : {current_margin_in_use:.2f}")
         print(f"  Overall Profit     : {overall_profit:.2f} ({overall_profit_pct:.2f}%)")
         print(f"  Realized PnL       : {realized_pnl:.2f} ({realized_pnl_pct:.2f}%)")
         print(f"  Unrealized PnL     : {unrealized_pnl:.2f} ({unrealized_pnl_pct:.2f}%)")
@@ -386,13 +386,13 @@ class Strategy():
 if __name__ == "__main__":
     import time
     symbol = 'SILVERMIC26JUNFUT'
-    # data = pd.read_csv(f'{symbol}_minute.csv')
+    data = pd.read_csv(f'{symbol}_minute.csv')
     # data = data.loc['2026-06-08 9:00':]
     data = pd.read_csv(f'{symbol}_minute.csv', parse_dates=['date'])
-    # data = data[data['date'] >= '2026-06-08 9:00']
+    data = data[data['date'] >= '2026-06-08 9:00']
     print(data.head())
     time.sleep(5)
-    target_points = 500
+    target_points = 1000
     strat = Strategy(symbol=symbol, data=data, target_points=target_points)
     print(f"\n{'='*72}")
     print(f"  Starting Backtest | Symbol: {strat.symbol} | Target: {strat.target_points} pts")
